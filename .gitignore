@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Camera output
+captures/
+*.jpg
+*.jpeg
+*.png
+*.mp4
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
