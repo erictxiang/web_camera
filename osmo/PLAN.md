@@ -68,26 +68,31 @@ without delivering, and MJPG negotiation worked first try. Only index 0 exists, 
 "identify the Pocket 3 among other video devices" problem is currently moot — it comes
 back the moment a virtual camera is installed.
 
-### Open issue: the frame is pillarboxed portrait
+### Resolved: portrait pillarboxing
 
-The camera was in **portrait orientation**, so the 1920×1080 container carries only a
-608×1080 column of image (9:16) with black bars either side:
+The camera was initially in **portrait orientation**, so the 1920×1080 container carried
+only a 608×1080 column of image with black bars either side — 31.7% of the pixels. That
+matters more here than on a normal camera: the Pocket 3 has no shutter, so stills are
+already capped at what the video stream delivers, and 68% bars discards most of that cap.
 
-```
-content columns : 656 -> 1263   (608px wide)
-content rows    : 0    -> 1079  (1080px tall)
-pixels used     : 31.7%
-```
+Rotating the Pocket 3's screen to landscape fixed it. Measured before and after:
 
-Two thirds of every frame is black. That matters more here than on a normal camera,
-because the Pocket 3 has no shutter and stills are already capped at what the video stream
-delivers — throwing away 68% of that cap is most of the available resolution.
+| | Portrait | Landscape |
+|---|---|---|
+| Content region | 608×1080 at x=656 | **1920×1080 at x=0** |
+| Frame used | 31.7% | **100.0%** |
+| Mean pixel value | 18.7 | 68.7 |
+| JPEG at q92 | 103 KB | 264 KB |
 
-Fix on the hardware side: rotate the Pocket 3's screen to landscape, which switches it out
-of portrait mode, then re-run `probe.py` and confirm content spans the full 1920. Only if
-portrait is actually wanted should the backend crop to the content region instead — and
-then `max_still` must be declared as the cropped size, not `(1920, 1080)`, or the
-capability lies.
+So `max_still = (1920, 1080)` is honest, and no crop belongs in the backend. `probe.py`
+warns automatically if the bars ever come back — worth watching, because the orientation
+lives on the camera and nothing in software pins it.
+
+**Not fixed, and deliberately not fixed in code:** the horizon sits 90° off — the camera
+body is physically rotated, so the ceiling is along the right edge. That costs no pixels
+and belongs to how the camera is aimed. Do not correct it with a rotation in the backend:
+rotating 1920×1080 yields 1080×1920 portrait, which re-creates the pillarbox problem this
+section just solved. Level the camera instead if the rig is ever fixed in place.
 
 ---
 
@@ -230,7 +235,7 @@ The handoff's largest single gap was that all verification had been manual. Agai
 |---|---|---|
 | 0 | venv + opencv | no — **done** |
 | 1 | `probe.py`, find the index | yes — **done, index 0** |
-| 2 | MJPG 1080p negotiation | yes — **done, 30.5 fps; orientation open** |
+| 2 | MJPG 1080p negotiation | yes — **done, 30 fps, full-frame** |
 | 3 | grab thread + buffer | no (`fake`) |
 | 4 | backend + `fake` + tests | no |
 | 5 | server | no |
