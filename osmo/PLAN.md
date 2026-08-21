@@ -231,20 +231,46 @@ The handoff's largest single gap was that all verification had been manual. Agai
 
 ## Order of work
 
-| # | Step | Needs hardware |
-|---|---|---|
-| 0 | venv + opencv | no — **done** |
-| 1 | `probe.py`, find the index | yes — **done, index 0** |
-| 2 | MJPG 1080p negotiation | yes — **done, 30 fps, full-frame** |
-| 3 | grab thread + buffer | no (`fake`) |
-| 4 | backend + `fake` + tests | no |
-| 5 | server | no |
-| 6 | intervalometer | no |
-| 7 | UI | no |
+| # | Step | Needs hardware | State |
+|---|---|---|---|
+| 0 | venv + opencv | no | **done** |
+| 1 | `probe.py`, find the index | yes | **done — index 0** |
+| 2 | MJPG 1080p negotiation | yes | **done — 30 fps, full-frame** |
+| 3 | grab thread + buffer | no | **done — `camrig/base.py`** |
+| 4 | backend + `fake` + tests | no | **done — 32 tests green** |
+| 5 | server | no | **done — `server.py`** |
+| 6 | intervalometer | no | **done — 10 ms drift over 5 frames** |
+| 7 | UI | no | **done — `static/index.html`** |
 
-Steps 1–2 are the only ones gated on the cable. Everything else is built and tested
-against `fake`, so the camera needs to be attached only for the two format-negotiation
-sessions and a final end-to-end pass.
+The build is complete and running. See `README.md` for how to run and expose it.
+
+### What changed against the plan during the build
+
+- **The MJPEG stream gained a bounded mode** (`/api/stream?frames=N`). An unbounded
+  stream can only be ended by the client hanging up, which `TestClient` cannot express —
+  it never sends `http.disconnect`, so the generator looped forever and the suite hung.
+  Rather than weaken the endpoint, `frames=N` ends the response cleanly, which the tests
+  and scripted grabs both wanted anyway. The unbounded default was then verified against
+  real uvicorn: killing a client mid-stream releases the slot and leaves the server
+  healthy.
+- **The fake backend gained an explicit tear-detection marker.** The first version of the
+  concurrency test asserted the green channel was constant per frame, which was never
+  true — `cv2.LINE_AA` blends hundreds of intermediate values into the text overlay. A
+  solid single-valued block, drawn last, is the real invariant.
+- **`POST /api/reopen` was added**, because constraint 2 means the camera has to be
+  re-acquired by hand after every power cycle and restarting the server for that is
+  needless.
+
+### Still open
+
+- **Video recording** is declared `video_record=False` and unimplemented — correct per the
+  handoff's rule that a capability which lies is worse than one that is absent. Build it or
+  leave the flag false.
+- **No authentication.** The tailnet is the entire security boundary. That is fine for
+  `tailscale serve`, and is exactly why `tailscale funnel` must not be used.
+- **Unattended operation is still bounded by the touchscreen.** A Pi rig with a systemd
+  unit would survive a crash, but not a camera power cycle. Worth settling before any Pi
+  work starts.
 
 ## Open questions
 

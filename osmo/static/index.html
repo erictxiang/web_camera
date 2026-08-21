@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>camrig</title>
+<style>
+  :root {
+    --paper: #EDF0EF; --surface: #FFF; --surface-2: #E2E8E7;
+    --ink: #14191A; --ink-2: #4C5658; --ink-3: #6F7A7C;
+    --rule: #CFD8D6; --accent: #0F6E68;
+    --ok: #2C7A4D; --warn: #96660A; --stop: #AF3728;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #0F1315; --surface: #171D1F; --surface-2: #1F2729;
+      --ink: #E4EAE9; --ink-2: #9AA6A6; --ink-3: #788484;
+      --rule: #283234; --accent: #4FBFB2;
+      --ok: #5FC98C; --warn: #E0B056; --stop: #E8776A;
+    }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right)
+             env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 16px 16px 48px; }
+
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+           margin-bottom: 16px; }
+  h1 { font-size: 1.35rem; margin: 0; letter-spacing: -.01em; }
+  .sub { color: var(--ink-3); font-size: .82rem;
+         font-family: ui-monospace, SFMono-Regular, monospace; }
+
+  .pill { font-family: ui-monospace, monospace; font-size: .68rem;
+          letter-spacing: .08em; text-transform: uppercase;
+          padding: 3px 8px; border: 1px solid; border-radius: 100px; }
+  .p-ok { color: var(--ok); border-color: var(--ok); }
+  .p-warn { color: var(--warn); border-color: var(--warn); }
+  .p-stop { color: var(--stop); border-color: var(--stop); }
+
+  .grid { display: grid; gap: 16px; grid-template-columns: 1fr; }
+  @media (min-width: 900px) { .grid { grid-template-columns: 1.55fr 1fr; } }
+
+  .card { background: var(--surface); border: 1px solid var(--rule);
+          border-radius: 10px; padding: 14px; }
+  .card h2 { font-size: .74rem; letter-spacing: .12em; text-transform: uppercase;
+             color: var(--ink-3); margin: 0 0 12px;
+             font-family: ui-monospace, monospace; font-weight: 500; }
+
+  .viewport { position: relative; background: #000; border-radius: 8px;
+              overflow: hidden; aspect-ratio: 16 / 9; display: grid;
+              place-items: center; }
+  .viewport img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .viewport .msg { position: absolute; color: #9AA6A6; font-size: .9rem;
+                   text-align: center; padding: 20px; }
+
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .row + .row { margin-top: 10px; }
+
+  button {
+    font: inherit; font-weight: 600; font-size: .95rem;
+    padding: 12px 18px; min-height: 46px; border-radius: 8px;
+    border: 1px solid var(--rule); background: var(--surface-2);
+    color: var(--ink); cursor: pointer; flex: 1 1 auto;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { background: var(--stop); border-color: var(--stop); color: #fff; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button:active:not(:disabled) { transform: translateY(1px); }
+
+  label { display: block; font-size: .72rem; letter-spacing: .08em;
+          text-transform: uppercase; color: var(--ink-3); margin-bottom: 5px;
+          font-family: ui-monospace, monospace; }
+  input { font: inherit; width: 100%; padding: 11px 12px; min-height: 46px;
+          border: 1px solid var(--rule); border-radius: 8px;
+          background: var(--paper); color: var(--ink); }
+  .field { flex: 1 1 120px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+  td { padding: 6px 0; vertical-align: top; }
+  td:first-child { color: var(--ink-3); white-space: nowrap; padding-right: 14px;
+                   font-family: ui-monospace, monospace; font-size: .78rem; }
+  td:last-child { text-align: right; font-family: ui-monospace, monospace; }
+
+  .gallery { display: grid; gap: 8px;
+             grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
+  .gallery a { display: block; aspect-ratio: 1; border-radius: 6px;
+               overflow: hidden; border: 1px solid var(--rule); }
+  .gallery img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+           background: var(--ink); color: var(--paper); padding: 11px 18px;
+           border-radius: 100px; font-size: .88rem; opacity: 0;
+           transition: opacity .2s; pointer-events: none; z-index: 20;
+           max-width: 90vw; }
+  .toast.show { opacity: 1; }
+  .hidden { display: none !important; }
+  .note { font-size: .82rem; color: var(--ink-3); margin: 10px 0 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>camrig</h1>
+    <span class="pill p-warn" id="health">connecting</span>
+    <span class="sub" id="subtitle">&nbsp;</span>
+  </header>
+
+  <div class="grid">
+    <div>
+      <div class="card">
+        <h2>Live view</h2>
+        <div class="viewport" id="viewport">
+          <div class="msg" id="viewport-msg">Waiting for the camera…</div>
+          <img id="preview" class="hidden" alt="live preview">
+        </div>
+        <div class="row" style="margin-top:12px">
+          <button class="primary" id="snap">Snapshot</button>
+          <button id="toggle-stream">Pause preview</button>
+          <button id="reopen" title="Re-acquire after replugging">Reopen camera</button>
+        </div>
+        <p class="note" id="osmo-note">
+          The Pocket 3 enters webcam mode only by tapping its own touchscreen —
+          after any power cycle, tap it, then use <b>Reopen camera</b>.
+        </p>
+      </div>
+
+      <div class="card" style="margin-top:16px" id="timelapse-card">
+        <h2>Timelapse</h2>
+        <div class="row">
+          <div class="field">
+            <label for="interval">Interval (s)</label>
+            <input id="interval" type="number" min="0.1" step="0.1" value="5"
+                   inputmode="decimal">
+          </div>
+          <div class="field">
+            <label for="count">Frames (blank = until stopped)</label>
+            <input id="count" type="number" min="1" step="1" placeholder="∞"
+                   inputmode="numeric">
+          </div>
+          <div class="field">
+            <label for="tlname">Name (optional)</label>
+            <input id="tlname" type="text" placeholder="sunset" maxlength="48">
+          </div>
+        </div>
+        <div class="row">
+          <button class="primary" id="tl-start">Start</button>
+          <button class="danger hidden" id="tl-stop">Stop</button>
+        </div>
+        <table id="tl-table" class="hidden" style="margin-top:12px"><tbody></tbody></table>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <h2>Status</h2>
+        <table id="status-table"><tbody></tbody></table>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2>Recent captures</h2>
+        <div class="gallery" id="gallery"></div>
+        <p class="note" id="gallery-empty">Nothing captured yet.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+let caps = {};
+let streaming = true;
+let tlRunning = false;
+
+function toast(message, ms = 2600) {
+  const el = $("toast");
+  el.textContent = message;
+  el.classList.add("show");
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove("show"), ms);
+}
+
+async function api(path, options = {}) {
+  const res = await fetch(path, options);
+  let body = null;
+  try { body = await res.json(); } catch (_) { /* empty body is fine */ }
+  if (!res.ok) {
+    throw new Error((body && body.detail) || `${res.status} ${res.statusText}`);
+  }
+  return body;
+}
+
+function startStream() {
+  const img = $("preview");
+  img.src = `/api/stream?t=${Date.now()}`;
+  img.classList.remove("hidden");
+  $("viewport-msg").classList.add("hidden");
+  streaming = true;
+  $("toggle-stream").textContent = "Pause preview";
+}
+
+function stopStream() {
+  const img = $("preview");
+  img.removeAttribute("src");
+  img.classList.add("hidden");
+  $("viewport-msg").classList.remove("hidden");
+  $("viewport-msg").textContent = "Preview paused.";
+  streaming = false;
+  $("toggle-stream").textContent = "Resume preview";
+}
+
+function fmtBytes(n) {
+  if (n == null) return "—";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / 1048576).toFixed(1)} MB`;
+}
+
+function rows(table, pairs) {
+  table.querySelector("tbody").innerHTML = pairs
+    .map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`)
+    .join("");
+}
+
+/* The UI hides what a backend cannot do rather than showing a control that
+   fails. The Sony backend, when it exists, has no live view at all -- this is
+   what keeps one UI honest across both cameras. */
+function applyCapabilities(cam) {
+  caps = cam.capabilities || {};
+
+  const live = !!caps.live_view;
+  $("viewport").classList.toggle("hidden", !live);
+  $("toggle-stream").classList.toggle("hidden", !live);
+  if (!live && streaming) stopStream();
+
+  $("snap").classList.toggle("hidden", !caps.still_capture);
+  $("timelapse-card").classList.toggle("hidden", !caps.still_capture);
+  $("osmo-note").classList.toggle("hidden", cam.backend !== "osmo");
+}
+
+function renderStatus(data) {
+  const cam = data.camera;
+  const srv = data.server;
+  applyCapabilities(cam);
+
+  const pill = $("health");
+  const openError = cam.open_error;
+  if (openError) {
+    pill.textContent = "camera error";
+    pill.className = "pill p-stop";
+  } else if (cam.healthy) {
+    pill.textContent = "live";
+    pill.className = "pill p-ok";
+  } else if (cam.opened) {
+    pill.textContent = "stale";
+    pill.className = "pill p-warn";
+  } else {
+    pill.textContent = "closed";
+    pill.className = "pill p-stop";
+  }
+
+  const max = caps.max_still ? `${caps.max_still[0]}×${caps.max_still[1]}` : "—";
+  $("subtitle").textContent = `${cam.backend} · ${max}`;
+
+  if (openError && streaming) {
+    $("preview").classList.add("hidden");
+    const msg = $("viewport-msg");
+    msg.classList.remove("hidden");
+    msg.textContent = openError;
+  }
+
+  const pairs = [
+    ["backend", cam.backend],
+    ["healthy", cam.healthy ? "yes" : "no"],
+    ["frame age", cam.frame_age == null ? "—" : `${cam.frame_age.toFixed(2)}s`],
+    ["frames grabbed", cam.frames_grabbed ?? "—"],
+    ["grab failures", cam.grab_failures ?? "—"],
+    ["stream clients", srv.stream_clients],
+    ["frames streamed", srv.frames_streamed],
+    ["snapshots", srv.snapshots],
+    ["uptime", `${Math.round(srv.uptime)}s`],
+  ];
+  if (cam.negotiated && cam.negotiated.fourcc) {
+    pairs.splice(1, 0, ["format", `${cam.negotiated.fourcc} ${cam.negotiated.width}×${cam.negotiated.height}`]);
+  }
+  if (cam.handle_leaked) pairs.push(["handle leaked", "yes"]);
+  if (openError) pairs.push(["error", openError]);
+  rows($("status-table"), pairs);
+
+  renderTimelapse(data.timelapse);
+}
+
+function renderTimelapse(tl) {
+  tlRunning = !!tl.running;
+  $("tl-start").classList.toggle("hidden", tlRunning);
+  $("tl-stop").classList.toggle("hidden", !tlRunning);
+  const table = $("tl-table");
+
+  if (!tl.started_at) { table.classList.add("hidden"); return; }
+  table.classList.remove("hidden");
+
+  const pairs = [
+    ["state", tlRunning ? "running" : "finished"],
+    ["captured", tl.target ? `${tl.captured} / ${tl.target}` : tl.captured],
+    ["failed", tl.failed],
+    ["interval", `${tl.interval}s`],
+    ["elapsed", tl.elapsed == null ? "—" : `${Math.round(tl.elapsed)}s`],
+  ];
+  if (tlRunning && tl.seconds_to_next != null) {
+    pairs.push(["next in", `${tl.seconds_to_next.toFixed(1)}s`]);
+  }
+  if (tl.last_error) pairs.push(["last error", tl.last_error]);
+  rows(table, pairs);
+}
+
+async function refreshStatus() {
+  try {
+    renderStatus(await api("/api/status"));
+  } catch (err) {
+    const pill = $("health");
+    pill.textContent = "offline";
+    pill.className = "pill p-stop";
+  }
+}
+
+async function refreshGallery() {
+  try {
+    const data = await api("/api/captures?limit=24");
+    const items = data.captures || [];
+    $("gallery-empty").classList.toggle("hidden", items.length > 0);
+    $("gallery").innerHTML = items
+      .map((c) => `<a href="${c.url}" target="_blank" rel="noopener"
+                      title="${c.name} · ${fmtBytes(c.bytes)}">
+                     <img loading="lazy" src="${c.url}" alt="${c.name}"></a>`)
+      .join("");
+  } catch (_) { /* the status pill already reports connectivity */ }
+}
+
+$("snap").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  try {
+    const r = await api("/api/snapshot", { method: "POST" });
+    toast(`Saved ${r.name} · ${r.width}×${r.height} · ${fmtBytes(r.bytes)}`);
+    refreshGallery();
+  } catch (err) {
+    toast(`Snapshot failed: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("toggle-stream").addEventListener("click", () => {
+  streaming ? stopStream() : startStream();
+});
+
+$("reopen").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  try {
+    await api("/api/reopen", { method: "POST" });
+    toast("Camera reopened");
+    if (streaming) startStream();
+  } catch (err) {
+    toast(`Reopen failed: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    refreshStatus();
+  }
+});
+
+$("tl-start").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  const countRaw = $("count").value.trim();
+  const payload = {
+    interval: parseFloat($("interval").value),
+    count: countRaw === "" ? null : parseInt(countRaw, 10),
+    name: $("tlname").value.trim() || null,
+  };
+  btn.disabled = true;
+  try {
+    await api("/api/timelapse/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    toast("Timelapse started");
+  } catch (err) {
+    toast(`Could not start: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    refreshStatus();
+  }
+});
+
+$("tl-stop").addEventListener("click", async (e) => {
+  e.currentTarget.disabled = true;
+  try {
+    await api("/api/timelapse/stop", { method: "POST" });
+    toast("Timelapse stopped");
+    refreshGallery();
+  } catch (err) {
+    toast(`Could not stop: ${err.message}`);
+  } finally {
+    e.currentTarget.disabled = false;
+    refreshStatus();
+  }
+});
+
+// If the multipart stream dies -- camera unplugged, server restarted -- the
+// img element fires error once and stays blank. Retry rather than sit dead.
+$("preview").addEventListener("error", () => {
+  if (!streaming) return;
+  setTimeout(() => { if (streaming) startStream(); }, 3000);
+});
+
+startStream();
+refreshStatus();
+refreshGallery();
+setInterval(refreshStatus, 1000);
+setInterval(() => { if (tlRunning) refreshGallery(); }, 10000);
+</script>
+</body>
+</html>

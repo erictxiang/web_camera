@@ -17,3 +17,6 @@ captures/
 .idea/
 Thumbs.db
 desktop.ini
+
+# Server logs
+*.log
