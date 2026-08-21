@@ -21,9 +21,15 @@ its findings.
 3. **There is no shutter command.** Not over any transport. Every "still" is a frame
    lifted from the video stream, capped at 1080p. Do not go looking for a photo API.
 4. **`release()` on a blocked `VideoCapture` segfaults the process.** If a read is hung,
-   `release()` frees memory a thread is sitting inside. Bound every read with
-   `CAP_PROP_READ_TIMEOUT_MSEC`, and at shutdown deliberately leak the handle if the grab
-   thread has not exited. Both are load-bearing, not tidiness problems.
+   `release()` frees memory a thread is sitting inside. At shutdown, deliberately leak the
+   handle if the grab thread has not exited — that is load-bearing, not a tidiness problem.
+   **Note the handoff's other half of this mitigation does not apply here:**
+   `CAP_PROP_READ_TIMEOUT_MSEC` is silently rejected by `CAP_DSHOW` (measured — `set()`
+   returns `False`, see findings below). It works on the FFMPEG-backed `stream` path, which
+   is where the handoff learned it. The UVC path needs a watchdog instead: the grab thread
+   stamps a monotonic timestamp after each successful read, and a supervisor marks the
+   backend unhealthy when that stamp goes stale. There is no way to unblock the read
+   itself.
 5. **One thread owns the device.** A preview and a timelapse both reading the same
    `cv2.VideoCapture` produces torn frames or a hang. Single grab thread → one-slot
    buffer → every consumer takes a `.copy()` under a lock.
@@ -40,6 +46,48 @@ its findings.
 The clean baseline matters: with no other camera on the machine, the Pocket 3 should land
 at OpenCV index 0. If a virtual camera (OBS, Teams, DroidCam) ever gets installed, that
 assumption dies and `probe.py` becomes mandatory rather than convenient.
+
+## Hardware findings — 2026-08-21, Pocket 3 attached
+
+Steps 1 and 2 are **done**. Measured, not inferred:
+
+| Finding | Value |
+|---|---|
+| Windows enumeration | `OsmoPocket3`, Camera class, plus MEDIA + two AudioEndpoints |
+| OpenCV index | **0** — the only index that opens; 1–3 do not open at all |
+| Default format | 1280×720, fourcc unreported (`----`) |
+| After MJPG 1080p request | readback **MJPG 1920×1080**, frames really are `(1080, 1920, 3)` |
+| Throughput | **30.5 fps** over 200 frames — comfortably past the ≥25 target |
+| `CAP_PROP_FPS` | returns `-1.0`; unsupported by this device, use measured fps |
+| `CAP_PROP_READ_TIMEOUT_MSEC` | **`set()` returns `False`** — unsupported on DSHOW |
+| `release()` on an idle capture | 0.54 s, clean |
+| JPEG encode at q92 | ~103 KB |
+
+The pessimistic expectations did not materialise: there was no phantom index that opens
+without delivering, and MJPG negotiation worked first try. Only index 0 exists, so the
+"identify the Pocket 3 among other video devices" problem is currently moot — it comes
+back the moment a virtual camera is installed.
+
+### Open issue: the frame is pillarboxed portrait
+
+The camera was in **portrait orientation**, so the 1920×1080 container carries only a
+608×1080 column of image (9:16) with black bars either side:
+
+```
+content columns : 656 -> 1263   (608px wide)
+content rows    : 0    -> 1079  (1080px tall)
+pixels used     : 31.7%
+```
+
+Two thirds of every frame is black. That matters more here than on a normal camera,
+because the Pocket 3 has no shutter and stills are already capped at what the video stream
+delivers — throwing away 68% of that cap is most of the available resolution.
+
+Fix on the hardware side: rotate the Pocket 3's screen to landscape, which switches it out
+of portrait mode, then re-run `probe.py` and confirm content spans the full 1920. Only if
+portrait is actually wanted should the backend crop to the content region instead — and
+then `max_still` must be declared as the cropped size, not `(1920, 1080)`, or the
+capability lies.
 
 ---
 
@@ -180,9 +228,9 @@ The handoff's largest single gap was that all verification had been manual. Agai
 
 | # | Step | Needs hardware |
 |---|---|---|
-| 0 | venv + opencv | no |
-| 1 | `probe.py`, find the index | **yes** |
-| 2 | MJPG 1080p negotiation | **yes** |
+| 0 | venv + opencv | no — **done** |
+| 1 | `probe.py`, find the index | yes — **done, index 0** |
+| 2 | MJPG 1080p negotiation | yes — **done, 30.5 fps; orientation open** |
 | 3 | grab thread + buffer | no (`fake`) |
 | 4 | backend + `fake` + tests | no |
 | 5 | server | no |

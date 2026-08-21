@@ -63,6 +63,36 @@ def probe_index(index, warmup):
         cap.release()
 
 
+def report_letterbox(frame, threshold=4):
+    """Warn if the frame is mostly black bars.
+
+    A Pocket 3 left in portrait orientation delivers a ~608x1080 column of
+    image inside the 1920x1080 container -- about a third of the pixels. It
+    is not a decode fault, and the only real fix is rotating the camera's
+    screen to landscape.
+    """
+    import numpy as np
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    cols = np.where(gray.mean(axis=0) > threshold)[0]
+    rows = np.where(gray.mean(axis=1) > threshold)[0]
+    if cols.size == 0 or rows.size == 0:
+        print("  content   : frame is entirely black -- lens covered, or no signal")
+        return
+
+    w = int(cols.max() - cols.min() + 1)
+    h = int(rows.max() - rows.min() + 1)
+    used = 100.0 * w * h / (frame.shape[0] * frame.shape[1])
+    print(f"  content   : {w}x{h} at x={cols.min()} y={rows.min()} "
+          f"-- {used:.1f}% of the frame")
+
+    if used < 95.0:
+        print(f"  WARNING: {100 - used:.0f}% of the frame is black bars. If the "
+              f"camera is in portrait, rotate its screen to landscape -- stills "
+              f"are already capped at the video resolution, so this is throwing "
+              f"away most of it.")
+
+
 def negotiate_1080p(index, frames):
     """Ask for MJPG 1080p, then report what we were actually given.
 
@@ -85,22 +115,33 @@ def negotiate_1080p(index, frames):
         print(f"  readback  : {info['fourcc']} {info['width']}x{info['height']} "
               f"@ {info['fps']} fps")
 
+        # The readback above is a property, and DirectShow will report a size it
+        # is not delivering. Trust the pixels instead.
         got = 0
+        last = None
         start = time.perf_counter()
         for _ in range(frames):
             ok, frame = cap.read()
             if ok and frame is not None:
                 got += 1
+                last = frame
         elapsed = time.perf_counter() - start
 
         rate = got / elapsed if elapsed > 0 else 0.0
         print(f"  measured  : {got}/{frames} frames in {elapsed:.2f}s "
               f"= {rate:.1f} fps")
+        if last is not None:
+            print(f"  pixels    : {last.shape[1]}x{last.shape[0]} actual frame")
 
         if info["fourcc"] != "MJPG":
             print("  WARNING: not MJPG -- expect low resolution or single-digit fps")
         if (info["width"], info["height"]) != (1920, 1080):
             print("  WARNING: not 1080p -- the camera refused the requested size")
+        if last is not None and (last.shape[1], last.shape[0]) != (info["width"],
+                                                                  info["height"]):
+            print("  WARNING: delivered pixels disagree with the property readback")
+        if last is not None:
+            report_letterbox(last)
     finally:
         cap.release()
 
@@ -154,6 +195,17 @@ def main():
         for info in live:
             print(f"\nNegotiating MJPG 1080p on index {info['index']}:")
             negotiate_1080p(info["index"], args.frames)
+
+        # Measured on a Pocket 3 2026-08-21: DSHOW rejects this outright, so a
+        # hung read cannot be bounded from here and the grab thread needs a
+        # staleness watchdog instead. Re-checked each run in case a future
+        # OpenCV or driver changes the answer.
+        probe_cap = cv2.VideoCapture(live[0]["index"], cv2.CAP_DSHOW)
+        if probe_cap.isOpened():
+            supported = probe_cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 2000)
+            print(f"\nCAP_PROP_READ_TIMEOUT_MSEC accepted: {bool(supported)}"
+                  f"{'' if supported else '  (expected on DSHOW -- use a watchdog)'}")
+        probe_cap.release()
 
     print(f"\nUse: --device {live[0]['index']}")
     return 0
