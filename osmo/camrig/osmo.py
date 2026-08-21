@@ -81,7 +81,7 @@ class OsmoBackend(GrabThreadBackend):
             max_still=(self.width, self.height),
         )
 
-    def _open_source(self) -> None:
+    def _open_source(self) -> cv2.VideoCapture:
         cap = cv2.VideoCapture(self.device, self.api)
         if not cap.isOpened():
             cap.release()
@@ -129,20 +129,18 @@ class OsmoBackend(GrabThreadBackend):
             self.width, self.height = got_w, got_h
 
         self._cap = cap
+        return cap
 
-    def _grab(self) -> np.ndarray | None:
-        cap = self._cap
-        if cap is None:
-            return None
-        ok, frame = cap.read()
+    def _grab(self, source: cv2.VideoCapture) -> np.ndarray | None:
+        ok, frame = source.read()
         if not ok or frame is None:
             return None
         return frame
 
-    def _close_source(self) -> None:
-        cap, self._cap = self._cap, None
-        if cap is not None:
-            cap.release()
+    def _close_source(self, source: cv2.VideoCapture) -> None:
+        if self._cap is source:
+            self._cap = None
+        source.release()
 
     def status(self) -> dict:
         st = super().status()

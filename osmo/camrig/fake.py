@@ -57,12 +57,13 @@ class FakeBackend(GrabThreadBackend):
             max_still=(self.width, self.height),
         )
 
-    def _open_source(self) -> None:
+    def _open_source(self) -> object:
         if self.fail_open:
             raise CameraError("fake: fail_open was set")
         self._n = 0
+        return object()
 
-    def _grab(self) -> np.ndarray | None:
+    def _grab(self, source: object) -> np.ndarray | None:
         if self.stall_after and self._n >= self.stall_after:
             time.sleep(0.05)
             return None
@@ -122,7 +123,7 @@ class FakeBackend(GrabThreadBackend):
         """Distinct values inside the tear marker. Size 1 means a clean frame."""
         return np.unique(frame[: self.MARKER, -self.MARKER :])
 
-    def _close_source(self) -> None:
+    def _close_source(self, source: object) -> None:
         pass
 
     def capture_still(self, path) -> CaptureResult:

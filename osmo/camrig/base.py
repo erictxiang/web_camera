@@ -207,52 +207,83 @@ class GrabThreadBackend(CameraBackend):
         self._last_frame_at = 0.0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._source: Any = None
         self._grab_failures = 0
         self._frames_grabbed = 0
         self._leaked = False
+        # Bumped on every open. A grab thread that outlived its session keeps
+        # its old epoch and is locked out of the buffer -- see _run.
+        self._epoch = 0
 
     # -- subclass hooks -------------------------------------------------
 
     @abstractmethod
-    def _open_source(self) -> None: ...
+    def _open_source(self) -> Any:
+        """Open and return the source handle. Raise CameraError on failure."""
 
     @abstractmethod
-    def _grab(self) -> np.ndarray | None:
-        """Block for the next frame. None means this attempt failed."""
+    def _grab(self, source: Any) -> np.ndarray | None:
+        """Block for the next frame. None means this attempt failed.
+
+        The handle is passed in rather than read off the instance so that a
+        thread which outlived its session cannot end up reading whatever
+        device the *next* session opened.
+        """
 
     @abstractmethod
-    def _close_source(self) -> None: ...
+    def _close_source(self, source: Any) -> None: ...
 
     # -- lifecycle ------------------------------------------------------
 
     def _acquire(self) -> None:
-        self._stop.clear()
+        # A fresh Event per session, never a cleared one. Clearing the shared
+        # Event would un-stop any thread still blocked from the last session
+        # and bring it back to life against the new device.
+        stop = threading.Event()
         self._leaked = False
-        self._open_source()
-        self._thread = threading.Thread(
-            target=self._run, name=f"{self.name}-grab", daemon=True
+
+        source = self._open_source()
+        epoch = self._epoch + 1
+        self._epoch = epoch
+        self._stop = stop
+        self._source = source
+
+        seq_at_start = self._frame_seq
+        thread = threading.Thread(
+            target=self._run,
+            args=(source, stop, epoch),
+            name=f"{self.name}-grab-{epoch}",
+            daemon=True,
         )
-        self._thread.start()
+        self._thread = thread
+        thread.start()
 
         # Wait for first light so open() fails loudly rather than handing back
-        # a backend that will only look broken later.
+        # a backend that will only look broken later. Compared against the
+        # count at entry, not against zero -- on a reopen the lifetime counter
+        # is already non-zero and would wave through a dead device.
         deadline = time.monotonic() + self.stale_after
         while time.monotonic() < deadline:
-            if self._frame_seq > 0:
+            if self._frame_seq > seq_at_start:
                 return
-            if not self._thread.is_alive():
+            if not thread.is_alive():
                 break
             time.sleep(0.02)
 
-        self._stop.set()
+        stop.set()
         raise CameraError(
             f"{self.name}: opened the source but no frame arrived within "
             f"{self.stale_after:.0f}s"
         )
 
     def _release(self) -> None:
-        self._stop.set()
+        stop = self._stop
         thread = self._thread
+        source = self._source
+        self._thread = None
+        self._source = None
+        stop.set()
+
         if thread is not None and thread.is_alive():
             thread.join(timeout=self.join_timeout)
             if thread.is_alive():
@@ -261,6 +292,11 @@ class GrabThreadBackend(CameraBackend):
                 # actively using and take the process down with it. Leaking is
                 # the lesser cost, and it is bounded -- the handle dies when
                 # the process does.
+                #
+                # The thread is not merely un-joined, it is disarmed: it holds
+                # its own stop Event and its own source handle, and its epoch
+                # is now stale, so it cannot touch the next session's device or
+                # buffer no matter when its read finally returns.
                 self._leaked = True
                 log.warning(
                     "%s: grab thread did not exit within %.1fs; leaking the "
@@ -268,25 +304,29 @@ class GrabThreadBackend(CameraBackend):
                     self.name,
                     self.join_timeout,
                 )
-                self._thread = None
                 return
-        self._thread = None
-        self._close_source()
+        if source is not None:
+            self._close_source(source)
 
-    def _run(self) -> None:
-        while not self._stop.is_set():
+    def _run(self, source: Any, stop: threading.Event, epoch: int) -> None:
+        while not stop.is_set():
             try:
-                frame = self._grab()
+                frame = self._grab(source)
             except Exception as exc:  # a source may die mid-read
                 self._last_error = f"grab failed: {exc}"
                 frame = None
 
             if frame is None:
                 self._grab_failures += 1
-                self._stop.wait(self.idle_sleep)
+                stop.wait(self.idle_sleep)
                 continue
 
             with self._frame_lock:
+                # A read that was in flight when the session ended lands here
+                # afterwards. Publishing it would inject a frame from the old
+                # device into the new session's buffer.
+                if epoch != self._epoch:
+                    break
                 self._frame = frame
                 self._frame_seq += 1
                 self._last_frame_at = time.monotonic()

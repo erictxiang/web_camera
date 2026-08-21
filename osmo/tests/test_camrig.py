@@ -98,6 +98,80 @@ def test_close_is_idempotent(backend):
     backend.close()
 
 
+class BlockingFake(FakeBackend):
+    """A fake whose grab can be made to block longer than the join timeout.
+
+    That is the unplug case: cap.read() sits in a driver call that never
+    returns, so close() cannot join the thread and must leak the handle.
+    """
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.block = False
+        self.blocked = threading.Event()
+        self.grab_threads: list[int] = []
+
+    def _grab(self, source):
+        self.grab_threads.append(threading.get_ident())
+        if self.block:
+            # Announce that we are inside the uninterruptible read, so the
+            # test can close() at the one moment that forces a leak rather
+            # than racing the thread and sometimes missing it.
+            self.blocked.set()
+            time.sleep(0.6)
+            return None
+        return super()._grab(source)
+
+
+def test_reopen_after_a_leaked_handle_leaves_one_writer(tmp_path):
+    """Replug recovery must not leave a zombie thread on the new device.
+
+    If a leaked grab thread survives into the next session it will write into
+    the buffer of a device it does not own -- two readers on one capture, the
+    exact failure the one-slot design exists to prevent.
+    """
+    b = BlockingFake(width=160, height=120, fps=60)
+    b.join_timeout = 0.2
+    b.open()
+    assert b.read_frame() is not None
+
+    b.block = True
+    assert b.blocked.wait(2.0), "grab thread never entered the blocking read"
+    b.close()
+    assert b._leaked, "expected the blocked thread to force a leak"
+
+    b.block = False
+    b.grab_threads.clear()
+    b.open()
+    try:
+        time.sleep(0.5)
+        writers = set(b.grab_threads)
+        assert len(writers) == 1, (
+            f"{len(writers)} threads are grabbing after reopen; "
+            f"a leaked thread survived into the new session"
+        )
+    finally:
+        b.close()
+
+
+def test_reopen_requires_a_genuinely_new_frame():
+    """First light must be checked per session, not against a lifetime total.
+
+    Otherwise the second open() sees a frame counter left over from the first
+    and reports success against a device that is delivering nothing.
+    """
+    b = FakeBackend(width=160, height=120, fps=60)
+    b.open()
+    assert b.read_frame() is not None
+    b.close()
+
+    b.stall_after = -1  # produce nothing at all from here on
+    b.stale_after = 0.5
+    with pytest.raises(CameraError):
+        b.open()
+    b.close()
+
+
 def test_open_failure_raises_and_is_recorded():
     b = FakeBackend(fail_open=True)
     with pytest.raises(CameraError):
