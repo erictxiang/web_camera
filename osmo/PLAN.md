@@ -261,7 +261,63 @@ The build is complete and running. See `README.md` for how to run and expose it.
   re-acquired by hand after every power cycle and restarting the server for that is
   needless.
 
-### Still open
+## Exposure and the USB control surface — measured 2026-08-22
+
+**Exposure is not reachable over USB.** This was assumed from the handoff; it is now
+measured. `exposure_probe.py` drove every UVC control to both ends of its range and
+classified each by whether the *pixels* moved, not by what `set()` returned:
+
+| Verdict | Controls |
+|---|---|
+| REAL — image changed | **none** |
+| PHANTOM — claimed success, no effect | `zoom` |
+| ABSENT — rejected outright (`-1`) | exposure, auto_exposure, gain, brightness, contrast, saturation, gamma, sharpness, backlight, auto_wb, wb_temperature, hue, focus |
+
+`zoom` is the reason the probe judges by image content: `set()` returned True, the
+readback never left 100, and not a pixel moved. The result is trustworthy because the
+scene was static — 28 brightness samples spanning 112.3 to 112.9, a range of 0.6 grey
+levels. Pointed at a brightening sky, this test would have been worthless.
+
+So `settings=False` on `OsmoBackend` is correct, and moving to a Raspberry Pi would not
+change it — what a camera exposes over USB is a property of its firmware, not the host.
+Linux would only *report* the absence more honestly than DirectShow does.
+
+### Why: the camera has two USB identities
+
+Enumerating `VID_2CA3` shows two different product IDs, and they are mutually exclusive
+USB configurations:
+
+```
+PID_0023  webcam mode          MI_00 Camera (UVC)   MI_02 Media (audio)
+PID_0020  data mode            MI_00 RNDIS (USB networking)
+                               MI_02 USB Mass Storage (SD card)
+                               MI_03..MI_07  five BULK interfaces
+```
+
+In webcam mode the camera presents video and audio and **nothing else** — there is no
+endpoint to send a command to, which is why every UVC control is absent rather than
+merely ignored.
+
+The other mode has an obvious control surface: RNDIS gives the camera an IP address over
+the cable, and five bulk interfaces is the shape of a proprietary protocol. That is
+presumably how DJI's own software drives it. But `PID_0020` exposes **no Camera-class
+device** — no UVC video at all.
+
+The practical consequence: over the cable you can have video, or you can have (probably)
+control, but not both. Reverse-engineering the `PID_0020` protocol is tractable in
+principle — IP is far friendlier than raw USB — but it is undocumented, it is a project,
+and it costs the clean 1080p UVC feed that already works.
+
+### What remains for exposure
+
+1. **The camera's own Pro mode**, set by hand. Open question: does webcam mode honour
+   those settings or override them with its own auto-exposure? Testable in seconds — set
+   EV compensation down, capture a frame, compare mean brightness.
+2. **Optical.** An ND filter to cut light overall, or a graduated ND to hold back the sky.
+   This is also the honest answer when a bright sky over darker ground simply exceeds the
+   sensor's dynamic range, which no exposure setting fixes.
+
+## Still open
 
 - **Video recording** is declared `video_record=False` and unimplemented — correct per the
   handoff's rule that a capability which lies is worse than one that is absent. Build it or
