@@ -96,6 +96,43 @@ One discrepancy worth remembering: `180f` (standard Battery Service) and
 Battery over the standard service is therefore not available; a battery read
 will have to go through DUML like everything else.
 
+## Live results — Python DUML port against the camera (2026-08-22)
+
+The protocol port (`camrig/duml.py`, `camrig/ble.py`) was tested against the real
+Pocket 3 with USB webcam mode streaming throughout.
+
+| Capability | Result | Detail |
+|---|---|---|
+| Receive + decode DUML | **works** | 633 messages in one session, CRCs valid |
+| Gimbal telemetry (0x04/0x05) | **works** | pitch/roll/yaw at ~20 Hz, no pairing needed |
+| Other push streams | seen | cmd_sets 0x00, 0x02, 0x0d; a device-name string "hg212" |
+| Pairing handshake (0x07) | **no response** | zero WIFI-cmdset traffic; the camera never answers `SET_PAIRING_PIN` |
+| Battery (0x06) | **not seen** | camera does not push it unprompted; a query needs pairing |
+| Gimbal mode set (0x04/0x4C) | **ignored** | sent lock=0, mode stayed 0x80, no motion change |
+
+Two things are now settled:
+
+- **Reads work without pairing.** The camera freely pushes telemetry; we decode it.
+  That is genuine, if modest, value — live gimbal angle into `/api/status`.
+- **Control does not work over BLE while USB webcam is the active session.** The
+  gimbal-mode command was silently ignored, exactly as lib-osmo-ble found. So a USB
+  webcam session does *not* satisfy the "active session" gate — that gate appears
+  specific to the camera's own Wi-Fi streaming state.
+
+### The consequence for exposure
+
+The exposure hunt is now lower-value than it looked. If the camera ignores a *gimbal*
+command in this state, it will very likely ignore a *camera-settings* command too — the
+gating is on session type, not on the specific command. Confirming that still needs the
+Wireshark capture, but the expected outcome moved toward "settings are gated behind an
+active Wi-Fi stream," which is mutually exclusive with USB webcam mode.
+
+There is a known escape hatch, at a cost: `WIFI_CONNECT` (0x47) can tell the camera to
+start its own Wi-Fi/RTMP stream over BLE, no phone app (node-osmo, xaionaro both do it).
+That would plausibly unlock control — but it puts the camera into streaming mode, which
+is not UVC webcam mode. So it reopens the video-or-control tradeoff at the radio level,
+just without a cable. Worth knowing; not obviously worth doing for a static timelapse.
+
 ## Still open, in test order
 
 1. **DUML pairing handshake from Python.** Port lib-osmo-ble's framing (CRCs
