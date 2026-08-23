@@ -70,22 +70,44 @@ Even the worst case is not nothing for this rig: battery percentage in
 `/api/status`, and gimbal **lock** — the "freeze the gimbal" ask from earlier —
 without touching the camera.
 
-## Open questions, in test order
+## Measured 2026-08-22: coexistence confirmed
 
-1. **Is BLE alive during USB webcam mode?** Cheapest and most important. If the
-   camera stops advertising in webcam mode, the whole idea collapses to
-   mode-juggling. Test: BLE scan while streaming over USB.
-2. **Does pairing work from Windows?** The PC has a "Generic Bluetooth Radio";
-   Python's `bleak` talks WinRT and should see it. Noble-based Node libraries
-   are known to be platform-fussy — prefer `bleak` + a port of lib-osmo-ble's
-   framing (the DUML spec above is complete enough to reimplement in ~200
-   lines).
-3. **Do any documented commands work while webcam mode is active?** Battery
-   query is the safest probe — read-only, known command, obvious success
-   criterion.
-4. **Are settings commands discoverable?** The expensive step: Wireshark +
-   Android HCI logs while changing exposure in Mimo, using xaionaro's
-   dissector. Only worth it if 1–3 pass.
+The go/no-go questions are answered, against the real camera, with USB webcam
+mode streaming the whole time (`ble_scan.py`):
+
+1. **BLE is alive during USB webcam mode — YES.** The camera advertises as
+   `OsmoPocket3-8BE7` at `8C:58:23:7F:8B:E8` (RSSI −49), manufacturer ID
+   0x08AA, advertising services `fff0`, `180f`, `1812`.
+2. **Windows can connect — YES.** `bleak` over the generic radio connected
+   first try and enumerated GATT. The DUML service is exactly as lib-osmo-ble
+   documents it:
+   ```
+   fff0
+     fff3  [write,notify,indicate,read]        <- the decoy; drops writes
+     fff4  [write,notify,indicate,read]        <- pairing / inbound
+     fff5  [write-without-response,notify,...] <- the command channel
+   ```
+3. **The USB stream is undisturbed by a BLE session — YES.** During the
+   connection: healthy=True, frame age 0.7 s, no new grab failures. Video and
+   BLE genuinely coexist.
+
+One discrepancy worth remembering: `180f` (standard Battery Service) and
+`1812` (HID) are *advertised* but absent from the GATT table once connected.
+Battery over the standard service is therefore not available; a battery read
+will have to go through DUML like everything else.
+
+## Still open, in test order
+
+1. **DUML pairing handshake from Python.** Port lib-osmo-ble's framing (CRCs
+   and layout documented above — ~200 lines) and complete pairing via `fff4`.
+   The camera may show a confirmation prompt on its screen.
+2. **Battery query over `fff5`.** Read-only, known command, obvious success
+   criterion. Proves the command channel end to end.
+3. **Gimbal mode / recenter while webcam mode is active.** Tests whether the
+   "requires active Wi-Fi streaming" gating lib-osmo-ble hit also applies when
+   the active session is USB webcam mode.
+4. **The exposure hunt.** Wireshark + the DUML dissector + Android HCI logs
+   while changing Pro-mode settings in Mimo. Expensive; only after 1–3 pass.
 
 ## How it would fit camrig
 
