@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from camrig import BACKENDS, CameraError, TimelapseError, TimelapseRunner, build_backend
+from camrig.gate import OwnerGate
 
 log = logging.getLogger("camrig.server")
 
@@ -101,6 +102,13 @@ def create_app(
                 backend.close()
 
     app = FastAPI(title="camrig", version="1.0", lifespan=lifespan)
+
+    # -- the owner gate (home_server S3-22, #154) ------------------------
+    # Every route is owner-only: the page, the stream, the captures, /api/status
+    # (Uptime Kuma's path) and every POST. It wraps the whole app, so a route added
+    # later is gated without a line of its own. HOME_OWNER names the owner; unset,
+    # everything is refused. See camrig/gate.py.
+    app.add_middleware(OwnerGate)
 
     # -- status ---------------------------------------------------------
 

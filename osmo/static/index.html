@@ -190,6 +190,13 @@ function toast(message, ms = 2600) {
 }
 
 async function api(path, options = {}) {
+  // Every write is JSON: the owner gate (camrig/gate.py) answers 415 to a POST that
+  // is not application/json. A POST without a body of its own sends an empty object.
+  const method = (options.method || "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    options = { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } };
+    if (options.body === undefined) options.body = "{}";
+  }
   const res = await fetch(path, options);
   let body = null;
   try { body = await res.json(); } catch (_) { /* empty body is fine */ }
