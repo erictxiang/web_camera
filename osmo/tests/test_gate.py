@@ -167,9 +167,13 @@ ROUTES = {
 
 @pytest.fixture(params=["", "/sony"])
 def any_app(request, tmp_path):
-    """The Osmo instance (no root path) and the Sony instance (behind /sony): same file."""
-    return create_app(FakeBackend(width=160, height=120, fps=60), tmp_path / "captures",
-                      open_on_start=False, root_path=request.param)
+    """The Osmo instance (no root path) and the Sony instance (behind /sony): same file.
+    The Sony one is also asked for its paths with the /sony prefix left on, as a proxy
+    that does not strip it sends them (test_sony.py::test_root_path_with_or_without_prefix)."""
+    app = create_app(FakeBackend(width=160, height=120, fps=60), tmp_path / "captures",
+                     open_on_start=False, root_path=request.param)
+    app.test_prefixes = ("", request.param) if request.param else ("",)
+    return app
 
 
 def test_the_route_table_is_exact(any_app):
@@ -188,12 +192,10 @@ def test_every_route_is_gated(any_app):
     assert {"/", "/api/status", "/api/stream", "/api/frame.jpg", "/api/snapshot", "/api/reopen",
             "/api/settings", "/api/timelapse", "/api/timelapse/start", "/api/timelapse/stop",
             "/api/captures"} <= paths, paths
-    for path, methods in found:
-        concrete = path.replace("{relative:path}", "x.jpg")
+    for prefix, (path, methods) in [(pf, f) for pf in app.test_prefixes for f in found]:
+        concrete = prefix + path.replace("{relative:path}", "x.jpg")
         assert "{" not in concrete, f"name the parameter of {path} here"
         for method in methods:
-            if method == "HEAD":
-                continue
             for who, hdrs in (("no headers", {}), ("anonymous", fill(CONTRACT["fixtures"]["anonymous"]["headers"])),
                               ("guest", fill(CONTRACT["fixtures"]["guest"]["headers"])),
                               ("funnel", fill(CONTRACT["fixtures"]["funnel"]["headers"])),
@@ -202,7 +204,7 @@ def test_every_route_is_gated(any_app):
                 if method == "POST":
                     h["Content-Type"] = "application/json"
                 status, _ = send(app, method, concrete, h, b"{}" if method == "POST" else b"")
-                assert status in (403, 415), f"{method} {path} for {who}: {status}"
+                assert status in (403, 415), f"{method} {concrete} for {who}: {status}"
 
 
 def test_docs_and_unknown_paths_are_refused(app):

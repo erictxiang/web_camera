@@ -17,6 +17,10 @@
 
     Captures land in sony\captures on the Windows side so File Browser sees
     them. Run once from a normal (non-elevated) PowerShell; Ctrl+C stops both.
+
+    Needs $env:HOME_OWNER (the owner's tailnet login): the server is owner-gated
+    (osmo\GATE.md) and refuses everyone without it, so this script refuses to start
+    without it and forwards it into WSL through WSLENV.
 .EXAMPLE
     .\sony\start.ps1
 .EXAMPLE
