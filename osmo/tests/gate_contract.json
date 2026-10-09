@@ -1,0 +1,136 @@
+{
+  "about": [
+    "THE GATE CONTRACT: the requests every first-party server must answer the same way, and the answer to each, per gate kind. Data only, and self-contained: home_server's test_gates.py runs it against each server that has a row, and the harness and web_camera vendor this file unchanged and run it against their own servers, with no home_server code (spec 3 D12). Copy the file as it is. It holds no server, path, port or module: a server's row lives outside this file.",
+    "THE SERVER UNDER TEST is started by the runner on 127.0.0.1 with a port of the runner's choosing, with its state, config and credentials in a temporary folder, with the owner's login set to names.owner and epc's tailnet name pinned to names.tailnet, whatever the server does to learn either. It must not touch real state, open a socket to anywhere but that 127.0.0.1 port, or start a process.",
+    "A ROW says what the server is: its declared gate kind (owner, partition or signed-in; the app gate is the app's own and has no fixture here), one safe GET path, and its writes (method, path, JSON body). The expected answer to every fixture comes from this file's `expected` for the row's declared kind, never from a value written per server, so a server wired with the wrong kind fails.",
+    "HOW TO SEND A FIXTURE. Send exactly the headers the fixture lists, after replacing {owner}, {guest} and {tailnet} with names.owner, names.guest and names.tailnet, and nothing else that identifies the caller: in particular no Host header unless the fixture lists one (write the request line and headers by hand; an HTTP client library adds its own Host). Close the connection after each request. A fixture with \"applies\": \"get+write\" is sent to the row's GET and once to each of its writes; a fixture with \"applies\": \"write\" is sent to each write only. A write is sent with the method and path of the row. Its body is the row's JSON body with Content-Type application/json when the fixture's \"body\" is \"json\", and \"body_text\" with Content-Type application/x-www-form-urlencoded when it is \"form\". A GET carries no body and no Content-Type. Every body carries its Content-Length.",
+    "HOW TO READ AN ANSWER. Outcomes are: a status number, which the answer must equal; \"admit\", which means the gate let the request through: a 200 for the GET (or the row's own status), and for a write a status that is not 403, 415, 501 or 5xx (a row may pin the exact status of a write, since an admitted write can still be answered 404 or 400 by the server for the data it names); \"not-2xx\", any answer that is not a 2xx. An outcome may be an object keyed by method with \"*\" for every other method: the JSON rule is for POST only, so a form body on any other method is admitted by the gate and answered by the server, whatever that answer is except a 2xx.",
+    "A ROW WITH NO WRITES. Send POST, PUT, PATCH and DELETE to the row's GET path with the fixture `owner` and a JSON body. Python's BaseHTTPRequestHandler answers a method it has no do_X for with 501 before any code runs. Accept 501, and accept any answer that is not a 2xx. The same probe is sent for every write method that the row does not list, as write_methods says.",
+    "WHY EACH FIXTURE IS HERE. bare: nothing at all, not even a Host, is the rebinding shape's cousin and is refused by the Host rule. local: a process on the owner's PC, straight to the port: credited to the owner. local_claims_owner and local_claims_guest: a local process that claims a login is that login (a login wins wherever it appears). anonymous: through Serve with no login (Funnel, or a tagged device). funnel: Tailscale-Funnel-Request marks a request anonymous, login or not. owner and guest: through Serve with a login. blank_login: a login that is only spaces is no login. rebind_alone and rebind_forged: a page on another name that now resolves to 127.0.0.1, without and with forged owner headers. cross_site_write and same_site_write: a browser writing on behalf of another page (ts.net is a public suffix, so epc's other ports are same-site). same_origin_write: the page's own write. form_write: a form-encoded body."
+  ],
+  "version": 1,
+  "names": {
+    "owner": "owner@example.com",
+    "guest": "guest@example.com",
+    "tailnet": "epc.tail-test.ts.net"
+  },
+  "kinds": ["owner", "partition", "signed-in"],
+  "write_methods": ["POST", "PUT", "PATCH", "DELETE"],
+  "fixtures": {
+    "bare": {
+      "applies": "get+write",
+      "headers": {}
+    },
+    "local": {
+      "applies": "get+write",
+      "headers": {"Host": "127.0.0.1"}
+    },
+    "local_claims_owner": {
+      "applies": "get+write",
+      "headers": {"Host": "127.0.0.1", "Tailscale-User-Login": "{owner}"}
+    },
+    "local_claims_guest": {
+      "applies": "get+write",
+      "headers": {"Host": "127.0.0.1", "Tailscale-User-Login": "{guest}"}
+    },
+    "anonymous": {
+      "applies": "get+write",
+      "headers": {"Host": "{tailnet}", "X-Forwarded-For": "100.64.0.9"}
+    },
+    "funnel": {
+      "applies": "get+write",
+      "headers": {"Host": "{tailnet}", "X-Forwarded-For": "203.0.113.7", "Tailscale-Funnel-Request": "?1", "Tailscale-User-Login": "{owner}"}
+    },
+    "owner": {
+      "applies": "get+write",
+      "headers": {"Host": "{tailnet}", "X-Forwarded-For": "100.64.0.9", "Tailscale-User-Login": "{owner}"}
+    },
+    "guest": {
+      "applies": "get+write",
+      "headers": {"Host": "{tailnet}", "X-Forwarded-For": "100.64.0.10", "Tailscale-User-Login": "{guest}"}
+    },
+    "blank_login": {
+      "applies": "get+write",
+      "headers": {"Host": "{tailnet}", "X-Forwarded-For": "100.64.0.9", "Tailscale-User-Login": "  "}
+    },
+    "rebind_alone": {
+      "applies": "get+write",
+      "headers": {"Host": "evil.example"}
+    },
+    "rebind_forged": {
+      "applies": "get+write",
+      "headers": {"Host": "evil.example", "X-Forwarded-For": "100.64.0.9", "Tailscale-User-Login": "{owner}"}
+    },
+    "cross_site_write": {
+      "applies": "write",
+      "headers": {"Host": "{tailnet}", "X-Forwarded-For": "100.64.0.9", "Tailscale-User-Login": "{owner}", "Sec-Fetch-Site": "cross-site"}
+    },
+    "same_site_write": {
+      "applies": "write",
+      "headers": {"Host": "{tailnet}", "X-Forwarded-For": "100.64.0.9", "Tailscale-User-Login": "{owner}", "Sec-Fetch-Site": "same-site"}
+    },
+    "same_origin_write": {
+      "applies": "write",
+      "headers": {"Host": "{tailnet}", "X-Forwarded-For": "100.64.0.9", "Tailscale-User-Login": "{owner}", "Sec-Fetch-Site": "same-origin"}
+    },
+    "form_write": {
+      "applies": "write",
+      "body": "form",
+      "body_text": "title=from+a+form",
+      "headers": {"Host": "{tailnet}", "X-Forwarded-For": "100.64.0.9", "Tailscale-User-Login": "{owner}"}
+    }
+  },
+  "expected": {
+    "owner": {
+      "bare": 403,
+      "local": "admit",
+      "local_claims_owner": "admit",
+      "local_claims_guest": 403,
+      "anonymous": 403,
+      "funnel": 403,
+      "owner": "admit",
+      "guest": 403,
+      "blank_login": 403,
+      "rebind_alone": 403,
+      "rebind_forged": 403,
+      "cross_site_write": 403,
+      "same_site_write": 403,
+      "same_origin_write": "admit",
+      "form_write": {"POST": 415, "*": "not-2xx"}
+    },
+    "partition": {
+      "bare": 403,
+      "local": "admit",
+      "local_claims_owner": "admit",
+      "local_claims_guest": "admit",
+      "anonymous": 403,
+      "funnel": 403,
+      "owner": "admit",
+      "guest": "admit",
+      "blank_login": 403,
+      "rebind_alone": 403,
+      "rebind_forged": 403,
+      "cross_site_write": 403,
+      "same_site_write": 403,
+      "same_origin_write": "admit",
+      "form_write": {"POST": 415, "*": "not-2xx"}
+    },
+    "signed-in": {
+      "bare": 403,
+      "local": "admit",
+      "local_claims_owner": "admit",
+      "local_claims_guest": "admit",
+      "anonymous": 403,
+      "funnel": 403,
+      "owner": "admit",
+      "guest": "admit",
+      "blank_login": 403,
+      "rebind_alone": 403,
+      "rebind_forged": 403,
+      "cross_site_write": 403,
+      "same_site_write": 403,
+      "same_origin_write": "admit",
+      "form_write": {"POST": 415, "*": "not-2xx"}
+    }
+  }
+}
