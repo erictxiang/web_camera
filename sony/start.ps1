@@ -33,6 +33,15 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# The server is owner-gated (osmo\camrig\gate.py, osmo\GATE.md, home_server #154): with
+# HOME_OWNER unset it answers 403 to everything, loopback included. Refuse before any side
+# effect (usbipd, the port check) rather than start a camera nobody can reach.
+$homeOwner = "$env:HOME_OWNER".Trim()
+if (-not $homeOwner) {
+    throw "HOME_OWNER is not set. The Sony server is owner-only and answers 403 to everyone without it. Set it to your tailnet login first, e.g. `$env:HOME_OWNER = 'you@example.com' (the login in 'tailscale status'), then re-run."
+}
+$env:HOME_OWNER = $homeOwner
+
 $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $repo = Split-Path -Parent $scriptDir
 $captures = Join-Path $scriptDir 'captures'
@@ -83,11 +92,20 @@ $capWsl   = To-WslPath $captures
 $python   = "$Venv/bin/python"
 $cmd = "$python $server --backend sony --host 127.0.0.1 --port $Port --keepalive $Keepalive --captures '$capWsl' --log-level $LogLevel"
 
-Write-Host "starting camrig (sony) in WSL on 127.0.0.1:$Port"
+# Windows environment variables do not reach WSL unless WSLENV lists them; /u = Windows to WSL
+# only. HOME_OWNER is required (checked above). HOME_TAILNET_NAME is passed when set: the gate
+# otherwise finds the tailnet name by running Windows' tailscale.exe through WSL interop.
+$savedWslEnv = $env:WSLENV
+$forward = @('HOME_OWNER/u')
+if ("$env:HOME_TAILNET_NAME".Trim()) { $forward += 'HOME_TAILNET_NAME/u' }
+$env:WSLENV = (@($savedWslEnv, ($forward -join ':')) | Where-Object { $_ }) -join ':'
+
+Write-Host "starting camrig (sony) in WSL on 127.0.0.1:$Port (owner gate: $homeOwner)"
 Write-Host "  $cmd"
 try {
     wsl -d $Distro -- bash -lc $cmd
 } finally {
+    $env:WSLENV = $savedWslEnv
     if ($attacher -and -not $attacher.HasExited) {
         Write-Host "stopping usbipd auto-attach"
         Stop-Process -Id $attacher.Id -Force -ErrorAction SilentlyContinue

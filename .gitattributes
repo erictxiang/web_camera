@@ -1,0 +1,2 @@
+# The sony scripts run in WSL (bash): LF in every checkout, whatever core.autocrlf says.
+*.sh text eol=lf

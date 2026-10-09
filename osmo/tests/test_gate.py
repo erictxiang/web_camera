@@ -152,11 +152,42 @@ def walk(routes, prefix=""):
             yield path, sorted(getattr(r, "methods", None) or ["GET"])
 
 
-def test_every_route_is_gated(app):
+# Every route the app registers, the Osmo ones and the Sony ones (/api/settings) alike. The
+# list is exact: a route added to server.py fails test_the_route_table_is_exact until it is
+# listed here, and test_every_route_is_gated then proves the new row is refused to everyone
+# but the owner. FastAPI's own /docs, /redoc and /openapi.json are in the table on purpose.
+ROUTES = {
+    ("GET", "/"), ("GET", "/api/status"), ("POST", "/api/reopen"), ("GET", "/api/stream"),
+    ("GET", "/api/frame.jpg"), ("POST", "/api/snapshot"), ("GET", "/api/settings"),
+    ("POST", "/api/settings"), ("GET", "/api/timelapse"), ("POST", "/api/timelapse/start"),
+    ("POST", "/api/timelapse/stop"), ("GET", "/api/captures"), ("GET", "/captures/{relative:path}"),
+    ("GET", "/openapi.json"), ("GET", "/docs"), ("GET", "/docs/oauth2-redirect"), ("GET", "/redoc"),
+}
+
+
+@pytest.fixture(params=["", "/sony"])
+def any_app(request, tmp_path):
+    """The Osmo instance (no root path) and the Sony instance (behind /sony): same file."""
+    return create_app(FakeBackend(width=160, height=120, fps=60), tmp_path / "captures",
+                      open_on_start=False, root_path=request.param)
+
+
+def test_the_route_table_is_exact(any_app):
+    found = {(m, p) for p, methods in walk(any_app.routes) for m in methods if m != "HEAD"}
+    assert found == ROUTES, (sorted(found - ROUTES), sorted(ROUTES - found))
+
+
+def test_the_gate_is_the_outermost_middleware(any_app):
+    assert [m.cls for m in any_app.user_middleware][0] is gate_mod.OwnerGate
+
+
+def test_every_route_is_gated(any_app):
+    app = any_app
     found = list(walk(app.routes))
     paths = {p for p, _ in found}
     assert {"/", "/api/status", "/api/stream", "/api/frame.jpg", "/api/snapshot", "/api/reopen",
-            "/api/timelapse/start", "/api/timelapse/stop", "/api/captures"} <= paths, paths
+            "/api/settings", "/api/timelapse", "/api/timelapse/start", "/api/timelapse/stop",
+            "/api/captures"} <= paths, paths
     for path, methods in found:
         concrete = path.replace("{relative:path}", "x.jpg")
         assert "{" not in concrete, f"name the parameter of {path} here"
@@ -195,6 +226,11 @@ def test_the_pages_writes_are_json(app):
     status, _ = send(app, "POST", "/api/timelapse/start", dict(OWNER, **{"Content-Type": "application/json"}),
                      json.dumps({"interval": 1, "count": 1}).encode())
     assert status not in (403, 415)
+    # the Sony control: a JSON write is admitted (the fake backend has no settings, so 400), form is not
+    h = dict(OWNER, **{"Content-Type": "application/json"})
+    status, _ = send(app, "POST", "/api/settings", h, json.dumps({"key": "iso", "value": "100"}).encode())
+    assert status not in (403, 415)
+    assert send(app, "POST", "/api/settings", dict(OWNER, **{"Content-Type": "text/plain"}), b"key=iso")[0] == 415
 
 
 def test_the_page_sends_json_on_every_fetch():

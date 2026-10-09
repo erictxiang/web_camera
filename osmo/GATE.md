@@ -29,11 +29,13 @@ Camera task. For anything started by hand, set it first:
 
 ## The Sony instance (WSL)
 
-`sony\start.ps1` runs `server.py` inside WSL, so the Windows environment variable has to be
-forwarded, and the server needs the tailnet name for its Host rule. In WSL the gate finds it
-by running Windows' `tailscale.exe` through interop (`/mnt/c/Program Files/Tailscale/`), or
-you can give it: `HOME_TAILNET_NAME=epc.your-tailnet.ts.net`. Start the Sony server like this
-(the equivalent in `start.ps1` is `wsl.exe ... env HOME_OWNER=... python server.py ...`):
+The Sony side is not a separate server: `sony\start.ps1` runs this same `server.py` inside WSL
+(`--backend sony`), so it is gated by the same middleware. `start.ps1` refuses to start when
+`HOME_OWNER` is empty, and forwards it into WSL through `WSLENV` (`HOME_OWNER/u`, appended to
+any existing value and restored afterwards; `HOME_TAILNET_NAME/u` too when that is set). The
+server needs the tailnet name for its Host rule. In WSL the gate finds it by running Windows'
+`tailscale.exe` through interop (`/mnt/c/Program Files/Tailscale/`), or you can give it:
+`HOME_TAILNET_NAME=epc.your-tailnet.ts.net`. Started by hand inside WSL it is:
 
     HOME_OWNER=you@example.com python server.py --backend sony --host 127.0.0.1 --port 8031
 
