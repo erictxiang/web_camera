@@ -75,9 +75,11 @@
   label { display: block; font-size: .72rem; letter-spacing: .08em;
           text-transform: uppercase; color: var(--ink-3); margin-bottom: 5px;
           font-family: ui-monospace, monospace; }
-  input { font: inherit; width: 100%; padding: 11px 12px; min-height: 46px;
+  input, select { font: inherit; width: 100%; padding: 11px 12px; min-height: 46px;
           border: 1px solid var(--rule); border-radius: 8px;
           background: var(--paper); color: var(--ink); }
+  select:disabled { opacity: .55; }
+  .warn-note { color: var(--warn); }
   .field { flex: 1 1 120px; }
 
   table { width: 100%; border-collapse: collapse; font-size: .88rem; }
@@ -128,6 +130,18 @@
           The Pocket 3 enters webcam mode only by tapping its own touchscreen —
           after any power cycle, tap it, then use <b>Reopen camera</b>.
         </p>
+        <p class="note hidden" id="sony-note">
+          The a6000 needs <b>USB Connection → PC Remote</b> and the mode dial on
+          <b>M</b>; exposure is locked in every other mode. If the body sleeps it
+          drops off USB until woken by hand — the server reconnects on its own once
+          it is back.
+        </p>
+      </div>
+
+      <div class="card hidden" style="margin-top:16px" id="settings-card">
+        <h2>Settings</h2>
+        <div class="row" id="settings-fields"></div>
+        <p class="note" id="settings-note">&nbsp;</p>
       </div>
 
       <div class="card" style="margin-top:16px" id="timelapse-card">
@@ -178,8 +192,10 @@
 
 const $ = (id) => document.getElementById(id);
 let caps = {};
-let streaming = true;
+let streaming = false;
+let streamKnown = false;
 let tlRunning = false;
+let settingsBusy = false;
 
 function toast(message, ms = 2600) {
   const el = $("toast");
@@ -201,7 +217,7 @@ async function api(path, options = {}) {
 
 function startStream() {
   const img = $("preview");
-  img.src = `/api/stream?t=${Date.now()}`;
+  img.src = `api/stream?t=${Date.now()}`;
   img.classList.remove("hidden");
   $("viewport-msg").classList.add("hidden");
   streaming = true;
@@ -241,10 +257,85 @@ function applyCapabilities(cam) {
   $("viewport").classList.toggle("hidden", !live);
   $("toggle-stream").classList.toggle("hidden", !live);
   if (!live && streaming) stopStream();
+  // Start the preview once, and only once we know the backend has one --
+  // asking a still-only camera for a stream is a 400 and a retry loop.
+  if (live && !streamKnown) startStream();
+  streamKnown = true;
 
   $("snap").classList.toggle("hidden", !caps.still_capture);
   $("timelapse-card").classList.toggle("hidden", !caps.still_capture);
+  const hadSettings = !$("settings-card").classList.contains("hidden");
+  $("settings-card").classList.toggle("hidden", !caps.settings);
+  if (caps.settings && !hadSettings) refreshSettings();
   $("osmo-note").classList.toggle("hidden", cam.backend !== "osmo");
+  $("sony-note").classList.toggle("hidden", cam.backend !== "sony");
+}
+
+/* Settings are rendered from what the camera reports, never from a list in
+   this file: choices, labels and read-only flags all come from the backend, so
+   a dial change on the body shows up here as controls greying out. */
+function renderSettings(settings) {
+  const box = $("settings-fields");
+  const keys = Object.keys(settings);
+  if (!keys.length) { box.innerHTML = ""; return; }
+  // Never rebuild a control someone is using.
+  if (box.contains(document.activeElement)) return;
+  box.innerHTML = keys.map((key) => {
+    const s = settings[key];
+    const opts = (s.choices && s.choices.length ? s.choices : [s.value])
+      .map((c) => `<option value="${escapeHtml(c)}"${c === s.value ? " selected" : ""}>${escapeHtml(c)}</option>`)
+      .join("");
+    const ro = s.readonly ? ' disabled title="read-only in this mode"' : "";
+    return `<div class="field">
+      <label for="set-${key}">${escapeHtml(s.label || key)}</label>
+      <select id="set-${key}" data-key="${key}"${ro}>${opts}</select>
+    </div>`;
+  }).join("");
+  box.querySelectorAll("select").forEach((el) => {
+    el.addEventListener("change", onSettingChange);
+  });
+}
+
+function escapeHtml(v) {
+  return String(v).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+async function onSettingChange(e) {
+  const el = e.currentTarget;
+  const key = el.dataset.key;
+  const value = el.value;
+  settingsBusy = true;
+  el.disabled = true;
+  try {
+    const r = await api("api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key, value }),
+    });
+    toast(`${key} → ${r.value}`);
+  } catch (err) {
+    toast(`${key}: ${err.message}`, 4000);
+  } finally {
+    settingsBusy = false;
+    el.disabled = false;
+    el.blur();
+    refreshSettings();
+  }
+}
+
+async function refreshSettings() {
+  if (!caps.settings || settingsBusy) return;
+  try {
+    const data = await api("api/settings");
+    renderSettings(data.settings || {});
+    $("settings-note").textContent = "Changes apply on the camera as you pick them.";
+    $("settings-note").className = "note";
+  } catch (err) {
+    $("settings-note").textContent = err.message;
+    $("settings-note").className = "note warn-note";
+  }
 }
 
 function renderStatus(data) {
@@ -258,7 +349,7 @@ function renderStatus(data) {
     pill.textContent = "camera error";
     pill.className = "pill p-stop";
   } else if (cam.healthy) {
-    pill.textContent = "live";
+    pill.textContent = caps.live_view ? "live" : "connected";
     pill.className = "pill p-ok";
   } else if (cam.opened) {
     pill.textContent = "stale";
@@ -281,19 +372,30 @@ function renderStatus(data) {
   const pairs = [
     ["backend", cam.backend],
     ["healthy", cam.healthy ? "yes" : "no"],
-    ["frame age", cam.frame_age == null ? "—" : `${cam.frame_age.toFixed(2)}s`],
-    ["frames grabbed", cam.frames_grabbed ?? "—"],
-    ["grab failures", cam.grab_failures ?? "—"],
-    ["stream clients", srv.stream_clients],
-    ["frames streamed", srv.frames_streamed],
-    ["snapshots", srv.snapshots],
-    ["uptime", `${Math.round(srv.uptime)}s`],
   ];
   if (cam.negotiated && cam.negotiated.fourcc) {
-    pairs.splice(1, 0, ["format", `${cam.negotiated.fourcc} ${cam.negotiated.width}×${cam.negotiated.height}`]);
+    pairs.push(["format", `${cam.negotiated.fourcc} ${cam.negotiated.width}×${cam.negotiated.height}`]);
   }
+  if (caps.live_view) {
+    pairs.push(
+      ["frame age", cam.frame_age == null ? "—" : `${cam.frame_age.toFixed(2)}s`],
+      ["frames grabbed", cam.frames_grabbed ?? "—"],
+      ["grab failures", cam.grab_failures ?? "—"],
+      ["stream clients", srv.stream_clients],
+      ["frames streamed", srv.frames_streamed],
+    );
+  }
+  if (cam.link_age != null) pairs.push(["link age", `${cam.link_age.toFixed(1)}s`]);
+  if (cam.keepalive_failures) pairs.push(["keepalive failures", cam.keepalive_failures]);
+  // Backend-specific facts (model, battery, dial...) arrive as a plain map so
+  // this page never has to know which camera it is talking to.
+  for (const [k, v] of Object.entries(cam.details || {})) {
+    if (v != null && v !== "") pairs.push([escapeHtml(k), escapeHtml(v)]);
+  }
+  pairs.push(["snapshots", srv.snapshots], ["uptime", `${Math.round(srv.uptime)}s`]);
   if (cam.handle_leaked) pairs.push(["handle leaked", "yes"]);
-  if (openError) pairs.push(["error", openError]);
+  if (cam.warning) pairs.push(["warning", `<span class="warn-note">${escapeHtml(cam.warning)}</span>`]);
+  if (openError) pairs.push(["error", escapeHtml(openError)]);
   rows($("status-table"), pairs);
 
   renderTimelapse(data.timelapse);
@@ -324,7 +426,7 @@ function renderTimelapse(tl) {
 
 async function refreshStatus() {
   try {
-    renderStatus(await api("/api/status"));
+    renderStatus(await api("api/status"));
   } catch (err) {
     const pill = $("health");
     pill.textContent = "offline";
@@ -334,7 +436,7 @@ async function refreshStatus() {
 
 async function refreshGallery() {
   try {
-    const data = await api("/api/captures?limit=24");
+    const data = await api("api/captures?limit=24");
     const items = data.captures || [];
     $("gallery-empty").classList.toggle("hidden", items.length > 0);
     $("gallery").innerHTML = items
@@ -349,8 +451,9 @@ $("snap").addEventListener("click", async (e) => {
   const btn = e.currentTarget;
   btn.disabled = true;
   try {
-    const r = await api("/api/snapshot", { method: "POST" });
-    toast(`Saved ${r.name} · ${r.width}×${r.height} · ${fmtBytes(r.bytes)}`);
+    const r = await api("api/snapshot", { method: "POST" });
+    const dims = r.width ? `${r.width}×${r.height}` : "raw";
+    toast(`Saved ${r.name} · ${dims} · ${fmtBytes(r.bytes)}`);
     refreshGallery();
   } catch (err) {
     toast(`Snapshot failed: ${err.message}`);
@@ -367,7 +470,7 @@ $("reopen").addEventListener("click", async (e) => {
   const btn = e.currentTarget;
   btn.disabled = true;
   try {
-    await api("/api/reopen", { method: "POST" });
+    await api("api/reopen", { method: "POST" });
     toast("Camera reopened");
     if (streaming) startStream();
   } catch (err) {
@@ -388,7 +491,7 @@ $("tl-start").addEventListener("click", async (e) => {
   };
   btn.disabled = true;
   try {
-    await api("/api/timelapse/start", {
+    await api("api/timelapse/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -405,7 +508,7 @@ $("tl-start").addEventListener("click", async (e) => {
 $("tl-stop").addEventListener("click", async (e) => {
   e.currentTarget.disabled = true;
   try {
-    await api("/api/timelapse/stop", { method: "POST" });
+    await api("api/timelapse/stop", { method: "POST" });
     toast("Timelapse stopped");
     refreshGallery();
   } catch (err) {
@@ -423,10 +526,10 @@ $("preview").addEventListener("error", () => {
   setTimeout(() => { if (streaming) startStream(); }, 3000);
 });
 
-startStream();
 refreshStatus();
 refreshGallery();
 setInterval(refreshStatus, 1000);
+setInterval(refreshSettings, 5000);
 setInterval(() => { if (tlRunning) refreshGallery(); }, 10000);
 </script>
 </body>

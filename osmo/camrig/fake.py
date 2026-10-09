@@ -17,7 +17,28 @@ import time
 import cv2
 import numpy as np
 
+from typing import Any
+
 from .base import Capabilities, CameraError, CaptureResult, GrabThreadBackend
+
+#: A small settings surface shaped like the Sony one -- enumerated choices,
+#: one read-only widget -- so the settings API and UI are exercised by the
+#: harness rather than only against the real body.
+FAKE_SETTINGS: dict[str, dict[str, Any]] = {
+    "expprogram": {"label": "Exposure Program", "value": "M", "choices": ["M", "P"], "readonly": True},
+    "shutterspeed": {
+        "label": "Shutter Speed",
+        "value": "1/125",
+        "choices": ["1/500", "1/250", "1/125", "1/60", "1/30"],
+        "readonly": False,
+    },
+    "iso": {
+        "label": "ISO Speed",
+        "value": "Auto ISO",
+        "choices": ["Auto ISO", "100", "200", "400", "800"],
+        "readonly": False,
+    },
+}
 
 
 class FakeBackend(GrabThreadBackend):
@@ -31,11 +52,15 @@ class FakeBackend(GrabThreadBackend):
         fail_open: bool = False,
         fail_every: int = 0,
         stall_after: int = 0,
+        settings: bool = False,
     ) -> None:
         super().__init__()
         self.width = width
         self.height = height
         self.fps = fps
+        #: Expose FAKE_SETTINGS through get_settings/set_setting.
+        self.with_settings = settings
+        self._settings = {k: dict(v) for k, v in FAKE_SETTINGS.items()}
         #: Raise on open, to exercise the error path through /api/status.
         self.fail_open = fail_open
         #: Fail every Nth capture_still, to prove a timelapse survives it.
@@ -52,10 +77,31 @@ class FakeBackend(GrabThreadBackend):
             live_view=True,
             still_capture=True,
             native_stills=False,
-            settings=False,
+            settings=self.with_settings,
             video_record=False,
             max_still=(self.width, self.height),
         )
+
+    # -- settings -------------------------------------------------------
+
+    def get_settings(self) -> dict[str, Any]:
+        if not self.with_settings:
+            return {}
+        return {k: dict(v) for k, v in self._settings.items()}
+
+    def set_setting(self, key: str, value: Any) -> str:
+        if not self.with_settings:
+            return super().set_setting(key, value)
+        w = self._settings.get(key)
+        if w is None:
+            raise CameraError(f"{key!r} is not a settable key")
+        if w["readonly"]:
+            raise CameraError(f"{key} is read-only")
+        token = str(value)
+        if token not in w["choices"]:
+            raise CameraError(f"{value!r} is not a valid {key}; choices: {', '.join(w['choices'])}")
+        w["value"] = token
+        return token
 
     def _open_source(self) -> object:
         if self.fail_open:

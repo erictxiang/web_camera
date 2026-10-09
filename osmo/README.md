@@ -1,13 +1,20 @@
-# camrig — Osmo Pocket 3
+# camrig — Osmo Pocket 3 (and the shared service)
 
 A Python service that drives the Pocket 3 in UVC webcam mode behind one web UI and one
 REST API: live MJPEG preview, JPEG snapshots, and an absolute-schedule intervalometer.
 Runs on Windows natively and is reachable from your other devices over Tailscale.
 
+The same server, UI and `camrig` package also drive the Sony a6000 through the `sony`
+backend — as a second process in WSL2, documented in [`../sony/README.md`](../sony/README.md).
+The UI adapts off `capabilities`: no viewport for a camera without live view, a settings
+card for one with settings.
+
 ```
 .venv\Scripts\python server.py --backend fake                    # no hardware
+.venv\Scripts\python server.py --backend fake --fake-settings    # ...with a settings card
 .venv\Scripts\python server.py --backend osmo --device 0         # localhost only
-.venv\Scripts\python server.py --backend osmo --host tailscale   # your tailnet
+.venv\Scripts\python server.py --backend osmo --port 8030        # what home_server publishes
+.venv\Scripts\python server.py --backend osmo --host tailscale   # direct tailnet bind
 ```
 
 Interactive API docs at `/docs`. Captures land in `captures/`, timelapse sequences in
@@ -43,20 +50,28 @@ already capped at the video resolution. `probe.py` warns if that happens.
 
 Two ways. Both keep the rig on your tailnet and off the public internet.
 
-### `tailscale serve` — recommended
+### `tailscale serve` — recommended, and owned by `home_server`
 
-Run the server on localhost and let Tailscale terminate TLS in front of it:
+Run the server on localhost and let Tailscale terminate TLS in front of it. On `epc` the
+Serve mappings and the landing-page cards are generated from
+`C:\Users\ericx\home_server\settings.psd1` by `setup\04-publish.ps1` (elevated), so do not
+hand-run `tailscale serve`. That file already maps:
 
-```
-.venv\Scripts\python server.py --backend osmo
-tailscale serve --bg 8080
-```
+| Card | Local | Published |
+|---|---|---|
+| Camera (Osmo) | `127.0.0.1:8030` | https://epc.tailb56b06.ts.net:12000/ |
+| Sony camera | `127.0.0.1:8031` (from WSL2) | https://epc.tailb56b06.ts.net:15000/ |
 
-It is then at **https://epc.tailb56b06.ts.net/** from any device signed into your tailnet.
+Note the local ports: the server defaults to 8080, which on this machine is File Browser's.
+Start the Osmo with `--port 8030` or the two fight over the socket.
+
 Real HTTPS, no certificate warnings, and no Windows Firewall rule needed — the traffic
 arrives through `tailscaled` rather than at a listening socket of its own.
+`tailscale serve status` shows what is published.
 
-`tailscale serve status` shows what is published; `tailscale serve --https=443 off` stops it.
+If an instance is ever mounted under a path instead of a port, start it with
+`--root-path /that-path`: routing accepts the request whether or not the proxy strips
+the prefix, the page gets a `<base>`, and every URL the API returns carries it.
 
 ### `--host tailscale` — direct bind
 
@@ -96,6 +111,11 @@ watch the camera and trigger captures. `serve` is tailnet-only; `funnel` is not.
 | GET | `/api/timelapse` | current run state |
 | POST | `/api/timelapse/start` | `{interval, count?, name?}`; 409 if running, 422 if invalid |
 | POST | `/api/timelapse/stop` | stops and returns final state |
+| GET | `/api/settings` | `{key: {label, value, choices, readonly}}`; 400 if the backend has none |
+| POST | `/api/settings` | `{key, value}`; returns the token the camera reports back; 400 with a reason otherwise |
+
+Settings exist only on backends that declare `settings` (Sony; `fake --fake-settings`).
+The Osmo has none — see PLAN.md for why there is nothing to expose.
 
 ```
 curl http://100.119.204.29:8080/api/status
@@ -113,12 +133,13 @@ camrig/
   base.py       CameraBackend ABC, Capabilities, CaptureResult,
                 and the grab thread / one-slot buffer every backend shares
   osmo.py       UVC -- DirectShow on Windows, V4L2 on Linux
+  sony.py       PTP via python-gphoto2 -- persistent session, keepalive, settings
   fake.py       Synthetic frames; the hardware-free regression harness
   timelapse.py  Absolute-schedule interval runner
-server.py       FastAPI app, CLI, MJPEG, Tailscale host resolution
+server.py       FastAPI app, CLI, MJPEG, settings, root-path, Tailscale host resolution
 static/index.html   Single-file iPad UI, no build step
 probe.py        Device enumeration and format negotiation
-tests/          32 tests, no hardware required
+tests/          75 tests, no hardware required (the Sony ones run against a gphoto2 double)
 ```
 
 ## Things that will bite you

@@ -3,9 +3,15 @@
     python server.py --backend fake                 # no hardware
     python server.py --backend osmo --device 0      # Windows native, not WSL
     python server.py --backend osmo --host tailscale
+    python server.py --backend sony --port 8090 --root-path /sony   # WSL2 only
 
 --host tailscale binds only the tailnet interface, so the rig is reachable from
 your other Tailscale devices and from nowhere else on the LAN.
+
+--root-path is for running behind a path on a reverse proxy, which is how both
+cameras share one `tailscale serve` site: the Osmo at /osmo on Windows and the
+Sony at /sony from WSL2. Routing accepts the request whether or not the proxy
+strips the prefix, and every URL the app hands out carries it.
 """
 
 from __future__ import annotations
@@ -34,6 +40,11 @@ log = logging.getLogger("camrig.server")
 
 HERE = Path(__file__).resolve().parent
 BOUNDARY = "camrigframe"
+
+
+class SettingRequest(BaseModel):
+    key: str = Field(..., min_length=1, max_length=32)
+    value: str = Field(..., min_length=1, max_length=64)
 
 
 class TimelapseRequest(BaseModel):
@@ -67,10 +78,12 @@ def create_app(
     captures_dir: Path,
     stream_fps: float = 15.0,
     open_on_start: bool = True,
+    root_path: str = "",
 ) -> FastAPI:
     captures_dir = Path(captures_dir)
     captures_dir.mkdir(parents=True, exist_ok=True)
     timelapse = TimelapseRunner(backend, captures_dir)
+    root_path = normalize_root_path(root_path)
 
     stats: dict[str, Any] = {
         "stream_clients": 0,
@@ -100,7 +113,11 @@ def create_app(
             finally:
                 backend.close()
 
-    app = FastAPI(title="camrig", version="1.0", lifespan=lifespan)
+    # FastAPI's root_path does two things at once: /docs and the OpenAPI
+    # document advertise the prefix, and Starlette's router strips it from an
+    # incoming path when present -- so the app answers the same whether the
+    # proxy forwards /sony/api/status or /api/status.
+    app = FastAPI(title="camrig", version="1.1", lifespan=lifespan, root_path=root_path)
 
     # -- status ---------------------------------------------------------
 
@@ -224,9 +241,38 @@ def create_app(
 
         stats["snapshots"] += 1
         payload = result.as_dict()
-        payload["url"] = f"/captures/{filename}"
-        payload["name"] = filename
+        # The backend may have changed the extension (a RAW capture); name the
+        # file the way it actually landed.
+        written = Path(result.path).name if result.path else filename
+        payload["url"] = f"{root_path}/captures/{written}"
+        payload["name"] = written
         return payload
+
+    # -- settings -------------------------------------------------------
+
+    @app.get("/api/settings")
+    async def get_settings() -> dict[str, Any]:
+        if not backend.capabilities.settings:
+            raise HTTPException(400, f"{backend.name} backend has no settings")
+        try:
+            settings = await asyncio.to_thread(backend.get_settings)
+        except CameraError as exc:
+            raise HTTPException(503, str(exc))
+        return {"settings": settings}
+
+    @app.post("/api/settings")
+    async def set_setting(req: SettingRequest) -> dict[str, Any]:
+        """Write one setting. The value returned is what the camera reports
+        back, which for Sony is only ever the exact token it accepted."""
+        if not backend.capabilities.settings:
+            raise HTTPException(400, f"{backend.name} backend has no settings")
+        if not backend.opened:
+            raise HTTPException(503, backend.last_error or "camera is not open")
+        try:
+            value = await asyncio.to_thread(backend.set_setting, req.key, req.value)
+        except CameraError as exc:
+            raise HTTPException(400, str(exc))
+        return {"key": req.key, "value": value}
 
     # -- timelapse ------------------------------------------------------
 
@@ -254,7 +300,7 @@ def create_app(
     def list_captures(limit: int = 60) -> dict[str, Any]:
         limit = max(1, min(limit, 500))
         files = sorted(
-            (p for p in captures_dir.rglob("*.jpg") if p.is_file()),
+            (p for p in captures_dir.rglob("*") if p.is_file() and p.suffix.lower() in CAPTURE_TYPES),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )[:limit]
@@ -262,7 +308,7 @@ def create_app(
             "captures": [
                 {
                     "name": p.name,
-                    "url": "/captures/" + p.relative_to(captures_dir).as_posix(),
+                    "url": f"{root_path}/captures/" + p.relative_to(captures_dir).as_posix(),
                     "bytes": p.stat().st_size,
                     "mtime": p.stat().st_mtime,
                 }
@@ -273,7 +319,8 @@ def create_app(
     @app.get("/captures/{relative:path}")
     def get_capture(relative: str):
         path = safe_capture_path(captures_dir, relative)
-        return FileResponse(path, media_type="image/jpeg")
+        media = CAPTURE_TYPES.get(path.suffix.lower(), "application/octet-stream")
+        return FileResponse(path, media_type=media)
 
     # -- UI -------------------------------------------------------------
 
@@ -282,9 +329,26 @@ def create_app(
         html = HERE / "static" / "index.html"
         if not html.is_file():
             raise HTTPException(404, "UI not installed")
-        return HTMLResponse(html.read_text(encoding="utf-8"))
+        # The page fetches with relative URLs, so one <base> is all it takes
+        # to move the whole UI under a proxy prefix.
+        text = html.read_text(encoding="utf-8").replace(
+            "<head>", f'<head>\n<base href="{root_path}/">', 1
+        )
+        return HTMLResponse(text)
 
     return app
+
+
+#: What the gallery lists and what /captures will serve.
+CAPTURE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".arw": "image/x-sony-arw"}
+
+
+def normalize_root_path(value: str | None) -> str:
+    """'' or '/prefix' -- one leading slash, no trailing slash."""
+    value = (value or "").strip()
+    if not value or value == "/":
+        return ""
+    return "/" + value.strip("/")
 
 
 def _slug(value: str | None) -> str | None:
@@ -340,8 +404,21 @@ def main(argv: list[str] | None = None) -> int:
         "'0.0.0.0' exposes on every interface",
     )
     parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument(
+        "--root-path",
+        default="",
+        help="path prefix when served behind a proxy, e.g. /sony",
+    )
     parser.add_argument("--stream-fps", type=float, default=15.0)
     parser.add_argument("--captures", default=str(HERE / "captures"))
+    parser.add_argument(
+        "--keepalive", type=float, default=5.0,
+        help="seconds between session polls (sony)",
+    )
+    parser.add_argument(
+        "--fake-settings", action="store_true",
+        help="give the fake backend a settings panel, to try the UI without a Sony",
+    )
     parser.add_argument("--log-level", default="info")
     args = parser.parse_args(argv)
 
@@ -352,14 +429,25 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.backend == "osmo" and sys.platform not in ("win32", "linux"):
         log.warning("the osmo backend needs Windows or Linux with a UVC driver")
+    if args.backend == "sony" and sys.platform == "win32":
+        log.warning("the sony backend needs Linux or WSL2 with python-gphoto2; "
+                    "see sony/wsl-setup.sh")
 
     kwargs: dict[str, Any] = {"device": args.device}
     if args.backend == "osmo":
         kwargs.update(width=args.width, height=args.height)
+    elif args.backend == "sony":
+        kwargs.update(keepalive=args.keepalive)
+    elif args.backend == "fake":
+        kwargs.update(settings=args.fake_settings)
     backend = build_backend(args.backend, **kwargs)
 
     host = resolve_host(args.host)
-    app = create_app(backend, Path(args.captures), stream_fps=args.stream_fps)
+    app = create_app(
+        backend, Path(args.captures), stream_fps=args.stream_fps, root_path=args.root_path
+    )
+    if args.root_path:
+        log.info("serving under %s", normalize_root_path(args.root_path))
 
     if args.host == "tailscale":
         log.info("bound to the tailnet only -- reachable at http://%s:%d",

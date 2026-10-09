@@ -22,21 +22,32 @@ __all__ = [
     "build_backend",
 ]
 
-BACKENDS = ("osmo", "fake")
+BACKENDS = ("osmo", "sony", "fake")
 
 
 def build_backend(name: str, **kwargs) -> CameraBackend:
     """Construct a backend by name.
 
-    osmo is imported lazily so the fake backend keeps working on hosts where
-    the UVC path cannot -- WSL2, most notably, whose kernel has no uvcvideo.
+    osmo and sony are imported lazily so the fake backend keeps working on
+    hosts where neither real path can: WSL2 has no uvcvideo for the Osmo, and
+    Windows has no python-gphoto2 for the Sony. The two cameras therefore run
+    as two processes on two hosts, and `fake` is the only backend that runs
+    everywhere.
     """
     if name == "fake":
         return FakeBackend(
             width=kwargs.get("width", 1280),
             height=kwargs.get("height", 720),
             fps=kwargs.get("fps", 30.0),
+            settings=kwargs.get("settings", False),
         )
+    if name == "sony":
+        from .sony import SonyBackend
+
+        backend = SonyBackend()
+        if "keepalive" in kwargs:
+            backend.keepalive_interval = float(kwargs["keepalive"])
+        return backend
     if name == "osmo":
         from .osmo import OsmoBackend
 
