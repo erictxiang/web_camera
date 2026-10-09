@@ -1,0 +1,10 @@
+# Installed into the WSL2 venv by wsl-setup.sh. The pip wheel bundles its own
+# libgphoto2 (2.5.34 at the time of writing), so the system libgphoto2 only
+# matters for the gphoto2 CLI used by the probe scripts.
+gphoto2>=2.5
+opencv-python-headless>=4.9
+numpy>=1.26
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pytest>=8.0
+httpx>=0.27
